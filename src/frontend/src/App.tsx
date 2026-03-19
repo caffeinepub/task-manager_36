@@ -1,24 +1,13 @@
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Toaster } from "@/components/ui/sonner";
 import {
   CheckCircle2,
-  CheckSquare,
   Circle,
   ClipboardList,
   Loader2,
   Plus,
   Settings,
   Trash2,
+  WifiOff,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -31,76 +20,89 @@ import {
   useToggleTask,
 } from "./hooks/useQueries";
 
-type Theme = "default" | "dark" | "forest" | "royal";
+type ThemeColor = "cyan" | "purple" | "emerald" | "rose" | "amber";
 
-const THEME_OPTIONS: {
-  value: Theme;
-  label: string;
-  description: string;
-  swatch: string;
-}[] = [
-  {
-    value: "default",
-    label: "Default (Light)",
-    description: "Clean light interface",
-    swatch: "#3B82F6",
-  },
-  {
-    value: "dark",
-    label: "Dark Mode",
-    description: "Easy on the eyes",
-    swatch: "#1B3350",
-  },
-  {
-    value: "forest",
-    label: "Forest Green",
-    description: "Natural and calm",
-    swatch: "#16a34a",
-  },
-  {
-    value: "royal",
-    label: "Royal Blue",
-    description: "Bold and majestic",
-    swatch: "#4338ca",
-  },
+const SWATCHES: { key: ThemeColor; color: string; ring: string }[] = [
+  { key: "cyan", color: "#06b6d4", ring: "ring-cyan-500" },
+  { key: "purple", color: "#a855f7", ring: "ring-purple-500" },
+  { key: "emerald", color: "#10b981", ring: "ring-emerald-500" },
+  { key: "rose", color: "#f43f5e", ring: "ring-rose-500" },
+  { key: "amber", color: "#f59e0b", ring: "ring-amber-500" },
 ];
 
+const LS_THEME = "theme";
+
+function getInitialTheme(): ThemeColor {
+  try {
+    const stored = localStorage.getItem(LS_THEME);
+    if (stored && SWATCHES.some((s) => s.key === stored))
+      return stored as ThemeColor;
+  } catch {
+    /* ignore */
+  }
+  return "cyan";
+}
+
 export default function App() {
-  const [theme, setTheme] = useState<Theme>("default");
-  const [pendingTheme, setPendingTheme] = useState<Theme>(theme);
+  const [theme, setTheme] = useState<ThemeColor>(getInitialTheme);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [newTaskText, setNewTaskText] = useState("");
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const modalRef = useRef<HTMLDivElement>(null);
 
   const { data: tasks = [], isLoading } = useListTasks();
   const addTask = useAddTask();
   const toggleTask = useToggleTask();
   const deleteTask = useDeleteTask();
 
-  // Apply theme to root element
+  const accentColor = SWATCHES.find((s) => s.key === theme)?.color ?? "#06b6d4";
+
+  // Persist theme
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "default") {
-      root.removeAttribute("data-theme");
-    } else {
-      root.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem(LS_THEME, theme);
+    } catch {
+      /* ignore */
     }
   }, [theme]);
 
-  // Close dropdown on outside click
+  // Online/offline
   useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      toast.success("You're back online!");
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      toast.warning("You're offline. Running from cache.");
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Close modal on outside click
+  useEffect(() => {
+    if (!settingsOpen) return;
     const handler = (e: MouseEvent) => {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node)
-      ) {
-        setDropdownOpen(false);
+      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  }, [settingsOpen]);
+
+  // Lock body scroll when modal open
+  useEffect(() => {
+    document.body.style.overflow = settingsOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [settingsOpen]);
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +111,6 @@ export default function App() {
     setNewTaskText("");
     try {
       await addTask.mutateAsync(text);
-      toast.success("Task added!");
     } catch {
       toast.error("Failed to add task.");
     }
@@ -126,326 +127,266 @@ export default function App() {
   const handleDelete = async (id: bigint) => {
     try {
       await deleteTask.mutateAsync(id);
-      toast.success("Task removed.");
     } catch {
       toast.error("Failed to delete task.");
     }
   };
 
-  const handleApplyTheme = () => {
-    setTheme(pendingTheme);
-    setSettingsOpen(false);
-    toast.success("Theme applied!");
-  };
-
-  const completedCount = tasks.filter((t) => t.completed).length;
-  const totalCount = tasks.length;
-
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      {/* Top Navigation */}
-      <header className="bg-nav-bg shadow-nav sticky top-0 z-40">
-        <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
-          {/* Brand */}
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-              <CheckSquare className="w-4.5 h-4.5 text-nav-fg" />
-            </div>
-            <span className="text-nav-fg font-semibold text-lg tracking-tight">
-              TaskFlow
-            </span>
-          </div>
-
-          {/* Gear / Settings dropdown */}
-          <div className="relative" ref={dropdownRef}>
-            <button
-              type="button"
-              data-ocid="nav.settings_button"
-              onClick={() => setDropdownOpen((v) => !v)}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-nav-fg/70 hover:text-nav-fg hover:bg-white/10 transition-colors"
-              aria-label="Open settings menu"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-
-            <AnimatePresence>
-              {dropdownOpen && (
-                <motion.div
-                  data-ocid="nav.dropdown_menu"
-                  initial={{ opacity: 0, y: -6, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -6, scale: 0.97 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute right-0 top-12 w-44 bg-card border border-border rounded-lg shadow-card py-1 z-50"
-                >
-                  <button
-                    type="button"
-                    data-ocid="nav.open_modal_button"
-                    onClick={() => {
-                      setPendingTheme(theme);
-                      setSettingsOpen(true);
-                      setDropdownOpen(false);
-                    }}
-                    className="w-full px-4 py-2.5 text-left text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
-                  >
-                    <Settings className="w-4 h-4 text-muted-foreground" />
-                    Settings
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </header>
-
-      {/* Main content */}
-      <main className="flex-1 py-10 px-4">
-        <div className="max-w-2xl mx-auto">
-          {/* Hero header */}
+    <div className="min-h-screen bg-slate-950 flex flex-col">
+      {/* Offline banner */}
+      <AnimatePresence>
+        {!isOnline && (
           <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-            className="mb-8"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="bg-amber-500 text-white text-sm font-medium overflow-hidden z-50"
           >
-            <h1 className="text-3xl font-bold text-foreground mb-1">
-              Welcome back!
-            </h1>
-            <p className="text-muted-foreground text-sm">
-              {isLoading
-                ? "Loading your tasks..."
-                : totalCount === 0
-                  ? "No tasks yet — add one below to get started."
-                  : `${completedCount} of ${totalCount} task${totalCount !== 1 ? "s" : ""} completed`}
-            </p>
-          </motion.div>
-
-          {/* Dashboard card */}
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.05 }}
-            className="bg-card border border-border rounded-xl shadow-card overflow-hidden"
-          >
-            {/* Add task section */}
-            <div className="p-6 border-b border-border">
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                Add New Task
-              </h2>
-              <form onSubmit={handleAddTask} className="flex gap-2">
-                <Input
-                  data-ocid="todo.input"
-                  value={newTaskText}
-                  onChange={(e) => setNewTaskText(e.target.value)}
-                  placeholder="What needs to be done?"
-                  className="flex-1 h-10 text-sm"
-                  disabled={addTask.isPending}
-                />
-                <Button
-                  data-ocid="todo.add_button"
-                  type="submit"
-                  disabled={!newTaskText.trim() || addTask.isPending}
-                  className="h-10 px-4 bg-primary hover:bg-primary/90 text-primary-foreground font-medium"
-                >
-                  {addTask.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4 mr-1" />
-                      Add
-                    </>
-                  )}
-                </Button>
-              </form>
-            </div>
-
-            {/* Task list section */}
-            <div className="p-6">
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-                Tasks
-              </h2>
-
-              {isLoading ? (
-                <div
-                  data-ocid="todo.loading_state"
-                  className="flex items-center justify-center py-12 gap-2 text-muted-foreground"
-                >
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="text-sm">Loading tasks…</span>
-                </div>
-              ) : tasks.length === 0 ? (
-                <motion.div
-                  data-ocid="todo.empty_state"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex flex-col items-center justify-center py-14 gap-3 text-center"
-                >
-                  <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center">
-                    <ClipboardList className="w-7 h-7 text-muted-foreground" />
-                  </div>
-                  <p className="font-medium text-foreground">No tasks yet</p>
-                  <p className="text-sm text-muted-foreground">
-                    Add your first task above to get started.
-                  </p>
-                </motion.div>
-              ) : (
-                <ul className="space-y-1">
-                  <AnimatePresence initial={false}>
-                    {tasks.map((task, idx) => (
-                      <motion.li
-                        key={task.id.toString()}
-                        data-ocid={`todo.item.${idx + 1}`}
-                        initial={{ opacity: 0, x: -8 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 8, height: 0, marginBottom: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted/50 transition-colors"
-                      >
-                        <button
-                          type="button"
-                          data-ocid={`todo.checkbox.${idx + 1}`}
-                          onClick={() => handleToggle(task.id)}
-                          disabled={toggleTask.isPending}
-                          className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors disabled:opacity-50"
-                          aria-label={
-                            task.completed ? "Mark incomplete" : "Mark complete"
-                          }
-                        >
-                          {task.completed ? (
-                            <CheckCircle2 className="w-5 h-5 text-primary" />
-                          ) : (
-                            <Circle className="w-5 h-5" />
-                          )}
-                        </button>
-
-                        <span
-                          className={`flex-1 text-sm transition-all ${
-                            task.completed
-                              ? "line-through text-muted-foreground"
-                              : "text-foreground"
-                          }`}
-                        >
-                          {task.text}
-                        </span>
-
-                        <button
-                          type="button"
-                          data-ocid={`todo.delete_button.${idx + 1}`}
-                          onClick={() => handleDelete(task.id)}
-                          disabled={deleteTask.isPending}
-                          className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all disabled:opacity-50"
-                          aria-label="Delete task"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </motion.li>
-                    ))}
-                  </AnimatePresence>
-                </ul>
-              )}
+            <div className="px-4 py-2 flex items-center gap-2">
+              <WifiOff className="w-4 h-4 flex-shrink-0" />
+              <span>You're offline — the app is running from cache.</span>
             </div>
           </motion.div>
-        </div>
-      </main>
+        )}
+      </AnimatePresence>
 
-      {/* Footer */}
-      <footer className="py-6 text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()}. Built with ❤️ using{" "}
-        <a
-          href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline hover:text-foreground transition-colors"
+      {/* Main layout: full-screen mobile, centered card desktop */}
+      <div className="flex-1 flex flex-col sm:items-center sm:justify-center sm:py-10 sm:px-4">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="w-full flex flex-col flex-1 sm:flex-none sm:w-full sm:max-w-md sm:rounded-3xl sm:border sm:border-white/10 sm:bg-white/5 sm:backdrop-blur-xl sm:shadow-2xl overflow-hidden"
         >
-          caffeine.ai
-        </a>
-      </footer>
-
-      {/* Theme Settings Modal */}
-      <Dialog
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (!open) setPendingTheme(theme);
-        }}
-      >
-        <DialogContent data-ocid="settings.dialog" className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-semibold flex items-center gap-2">
-              <Settings className="w-5 h-5 text-primary" />
-              Theme Settings
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="py-2">
-            <p className="text-sm text-muted-foreground mb-4">
-              Choose a color theme for your workspace.
-            </p>
-            <RadioGroup
-              value={pendingTheme}
-              onValueChange={(v) => setPendingTheme(v as Theme)}
-              className="space-y-2"
-            >
-              {THEME_OPTIONS.map((opt) => (
-                <label
-                  key={opt.value}
-                  htmlFor={`theme-${opt.value}`}
-                  className={`flex items-center gap-4 p-3 rounded-lg border cursor-pointer transition-all ${
-                    pendingTheme === opt.value
-                      ? "border-primary bg-primary/5"
-                      : "border-border hover:border-primary/40 hover:bg-muted/30"
-                  }`}
-                >
-                  <RadioGroupItem
-                    data-ocid={`settings.radio.${opt.value}`}
-                    value={opt.value}
-                    id={`theme-${opt.value}`}
-                    className="sr-only"
-                  />
-                  <div
-                    className="w-8 h-8 rounded-md flex-shrink-0 shadow-xs"
-                    style={{ backgroundColor: opt.swatch }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground">
-                      {opt.label}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {opt.description}
-                    </p>
-                  </div>
-                  {pendingTheme === opt.value && (
-                    <CheckCircle2 className="w-5 h-5 text-primary flex-shrink-0" />
-                  )}
-                </label>
-              ))}
-            </RadioGroup>
+          {/* Header */}
+          <div className="px-6 pt-8 pb-4 flex items-start justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">
+                Task Manager
+              </h1>
+              <p className="text-slate-400 text-sm mt-1">
+                Keep track of your most important tasks today.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              {/* Online dot */}
+              <span
+                className={`w-2 h-2 rounded-full flex-shrink-0 ${isOnline ? "bg-green-400" : "bg-amber-400"}`}
+                title={isOnline ? "Online" : "Offline"}
+              />
+              {/* Settings gear */}
+              <button
+                type="button"
+                data-ocid="settings.open_modal_button"
+                onClick={() => setSettingsOpen(true)}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                aria-label="Open settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
-          <DialogFooter className="gap-2">
-            <Button
-              data-ocid="settings.cancel_button"
-              variant="outline"
-              onClick={() => {
-                setSettingsOpen(false);
-                setPendingTheme(theme);
+          {/* Add task form */}
+          <form onSubmit={handleAddTask} className="px-6 pb-4 flex gap-2">
+            <input
+              data-ocid="todo.input"
+              value={newTaskText}
+              onChange={(e) => setNewTaskText(e.target.value)}
+              placeholder="Add a new task…"
+              className="flex-1 h-11 px-4 rounded-xl bg-black/20 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 transition-all"
+              style={{ focusRingColor: accentColor } as React.CSSProperties}
+              onFocus={(e) => {
+                e.currentTarget.style.boxShadow = `0 0 0 2px ${accentColor}`;
               }}
+              onBlur={(e) => {
+                e.currentTarget.style.boxShadow = "";
+              }}
+              disabled={addTask.isPending}
+            />
+            <button
+              type="submit"
+              data-ocid="todo.add_button"
+              disabled={!newTaskText.trim() || addTask.isPending}
+              className="h-11 px-4 rounded-xl text-white font-semibold text-sm flex items-center gap-1.5 transition-opacity disabled:opacity-40"
+              style={{ backgroundColor: accentColor }}
             >
-              <X className="w-4 h-4 mr-1.5" />
-              Cancel
-            </Button>
-            <Button
-              data-ocid="settings.confirm_button"
-              onClick={handleApplyTheme}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground"
-            >
-              Apply Changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {addTask.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Add
+                </>
+              )}
+            </button>
+          </form>
 
-      <Toaster position="bottom-right" />
+          {/* Task list */}
+          <div className="flex-1 px-4 pb-6">
+            {isLoading ? (
+              <div
+                data-ocid="todo.loading_state"
+                className="flex items-center justify-center py-16 gap-2 text-slate-400"
+              >
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="text-sm">Loading…</span>
+              </div>
+            ) : tasks.length === 0 ? (
+              <motion.div
+                data-ocid="todo.empty_state"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col items-center justify-center py-16 gap-3 text-center"
+              >
+                <ClipboardList className="w-10 h-10 text-slate-600" />
+                <p className="text-slate-400 text-sm">
+                  You're all caught up! Enjoy your day.
+                </p>
+              </motion.div>
+            ) : (
+              <ul className="space-y-1">
+                <AnimatePresence initial={false}>
+                  {tasks.map((task, idx) => (
+                    <motion.li
+                      key={task.id.toString()}
+                      data-ocid={`todo.item.${idx + 1}`}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 8, height: 0 }}
+                      transition={{ duration: 0.18 }}
+                      className="group flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-white/5 transition-colors"
+                    >
+                      <button
+                        type="button"
+                        data-ocid={`todo.checkbox.${idx + 1}`}
+                        onClick={() => handleToggle(task.id)}
+                        disabled={toggleTask.isPending}
+                        className="flex-shrink-0 transition-opacity disabled:opacity-50"
+                        aria-label={
+                          task.completed ? "Mark incomplete" : "Mark complete"
+                        }
+                      >
+                        {task.completed ? (
+                          <CheckCircle2
+                            className="w-5 h-5"
+                            style={{ color: accentColor }}
+                          />
+                        ) : (
+                          <Circle className="w-5 h-5 text-slate-600" />
+                        )}
+                      </button>
+
+                      <span
+                        className={`flex-1 text-sm transition-all ${
+                          task.completed
+                            ? "line-through text-slate-600"
+                            : "text-slate-100"
+                        }`}
+                      >
+                        {task.text}
+                      </span>
+
+                      <button
+                        type="button"
+                        data-ocid={`todo.delete_button.${idx + 1}`}
+                        onClick={() => handleDelete(task.id)}
+                        disabled={deleteTask.isPending}
+                        className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-slate-600 hover:text-rose-400 transition-all disabled:opacity-30"
+                        aria-label="Delete task"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </motion.li>
+                  ))}
+                </AnimatePresence>
+              </ul>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 border-t border-white/5 text-center">
+            <p className="text-xs text-slate-600">
+              © {new Date().getFullYear()}. Built with ❤️ using{" "}
+              <a
+                href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-slate-400 transition-colors"
+              >
+                caffeine.ai
+              </a>
+            </p>
+          </div>
+        </motion.div>
+      </div>
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {settingsOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          >
+            <motion.div
+              ref={modalRef}
+              data-ocid="settings.dialog"
+              initial={{ opacity: 0, y: 20, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.97 }}
+              transition={{ duration: 0.22 }}
+              className="w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden"
+            >
+              {/* Modal header */}
+              <div className="px-6 pt-6 pb-4 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-white">Settings</h2>
+                <button
+                  type="button"
+                  data-ocid="settings.close_button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                  aria-label="Close settings"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Theme color picker */}
+              <div className="px-6 pb-8">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">
+                  Theme Color
+                </p>
+                <div className="flex items-center gap-3">
+                  {SWATCHES.map((swatch) => (
+                    <button
+                      key={swatch.key}
+                      type="button"
+                      data-ocid={"settings.toggle"}
+                      onClick={() => {
+                        setTheme(swatch.key);
+                      }}
+                      aria-label={`Set ${swatch.key} theme`}
+                      className={`w-10 h-10 rounded-full transition-all ${
+                        theme === swatch.key
+                          ? "opacity-100 ring-2 ring-offset-2 ring-offset-slate-900"
+                          : "opacity-60 hover:opacity-80"
+                      } ${swatch.ring}`}
+                      style={{ backgroundColor: swatch.color }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <Toaster position="bottom-center" />
     </div>
   );
 }
