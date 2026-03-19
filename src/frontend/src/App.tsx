@@ -1,24 +1,27 @@
 import { Toaster } from "@/components/ui/sonner";
 import {
+  CalendarDays,
   CheckCircle2,
   Circle,
   ClipboardList,
   Loader2,
   Moon,
+  Pencil,
   Plus,
   Settings,
   Sun,
   Trash2,
-  WifiOff,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  type Task,
   useAddTask,
   useDeleteTask,
   useListTasks,
+  useRenameTask,
   useToggleTask,
 } from "./hooks/useQueries";
 
@@ -34,6 +37,8 @@ const SWATCHES: { key: ThemeColor; color: string; ring: string }[] = [
 
 const LS_THEME = "theme";
 const LS_DARK_MODE = "darkMode";
+const LS_TIMESTAMPS = "taskTimestamps";
+const MS_24H = 24 * 60 * 60 * 1000;
 
 function getInitialTheme(): ThemeColor {
   try {
@@ -56,20 +61,81 @@ function getInitialDarkMode(): boolean {
   return true;
 }
 
+function loadTimestamps(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(LS_TIMESTAMPS);
+    if (raw) return JSON.parse(raw) as Record<string, number>;
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+function saveTimestamps(map: Record<string, number>) {
+  try {
+    localStorage.setItem(LS_TIMESTAMPS, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+function formatDueDate(dueDate: string): string {
+  // Parse as local date to avoid timezone shift
+  const [year, month, day] = dueDate.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 export default function App() {
   const [theme, setTheme] = useState<ThemeColor>(getInitialTheme);
   const [darkMode, setDarkMode] = useState<boolean>(getInitialDarkMode);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newTaskText, setNewTaskText] = useState("");
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [tick, setTick] = useState(0);
   const modalRef = useRef<HTMLDivElement>(null);
+
+  // Calendar/schedule state
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleText, setScheduleText] = useState("");
+
+  // Rename state
+  const [renamingTask, setRenamingTask] = useState<{
+    id: bigint;
+    text: string;
+  } | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameModalRef = useRef<HTMLDivElement>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: tasks = [], isLoading } = useListTasks();
   const addTask = useAddTask();
   const toggleTask = useToggleTask();
   const deleteTask = useDeleteTask();
+  const renameTask = useRenameTask();
 
   const accentColor = SWATCHES.find((s) => s.key === theme)?.color ?? "#06b6d4";
+
+  // Sync timestamps when tasks load
+  useEffect(() => {
+    if (!tasks.length) return;
+    const map = loadTimestamps();
+    let changed = false;
+    for (const task of tasks) {
+      const key = task.id.toString();
+      if (!(key in map)) {
+        map[key] = Date.now();
+        changed = true;
+      }
+    }
+    if (changed) saveTimestamps(map);
+  }, [tasks]);
+
+  // Re-check every minute
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Persist theme
   useEffect(() => {
@@ -89,25 +155,7 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Online/offline
-  useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      toast.success("You're back online!");
-    };
-    const handleOffline = () => {
-      setIsOnline(false);
-      toast.warning("You're offline. Running from cache.");
-    };
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
-
-  // Close modal on outside click
+  // Close settings modal on outside click
   useEffect(() => {
     if (!settingsOpen) return;
     const handler = (e: MouseEvent) => {
@@ -119,13 +167,53 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handler);
   }, [settingsOpen]);
 
-  // Lock body scroll when modal open
+  // Lock body scroll when any modal open
   useEffect(() => {
-    document.body.style.overflow = settingsOpen ? "hidden" : "";
+    document.body.style.overflow =
+      settingsOpen || !!renamingTask ? "hidden" : "";
     return () => {
       document.body.style.overflow = "";
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, renamingTask]);
+
+  // Auto-focus rename input when dialog opens
+  useEffect(() => {
+    if (renamingTask) {
+      setTimeout(() => renameInputRef.current?.focus(), 50);
+    }
+  }, [renamingTask]);
+
+  // Long press handlers
+  const startLongPress = (task: Task) => {
+    longPressTimerRef.current = setTimeout(() => {
+      setRenamingTask({ id: task.id, text: task.text });
+      setRenameText(task.text);
+    }, 500);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const closeRenameDialog = () => {
+    setRenamingTask(null);
+    setRenameText("");
+  };
+
+  const handleRename = async () => {
+    if (!renamingTask) return;
+    const trimmed = renameText.trim();
+    if (!trimmed) return;
+    try {
+      await renameTask.mutateAsync({ id: renamingTask.id, newText: trimmed });
+      closeRenameDialog();
+    } catch {
+      toast.error("Failed to rename task.");
+    }
+  };
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,9 +221,24 @@ export default function App() {
     if (!text) return;
     setNewTaskText("");
     try {
-      await addTask.mutateAsync(text);
+      await addTask.mutateAsync({ text });
     } catch {
       toast.error("Failed to add task.");
+    }
+  };
+
+  const handleScheduleTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = scheduleText.trim();
+    if (!text || !scheduleDate) return;
+    try {
+      await addTask.mutateAsync({ text, dueDate: scheduleDate });
+      setScheduleText("");
+      setScheduleDate("");
+      setSettingsOpen(false);
+      toast.success(`Task scheduled for ${formatDueDate(scheduleDate)}`);
+    } catch {
+      toast.error("Failed to schedule task.");
     }
   };
 
@@ -150,9 +253,26 @@ export default function App() {
   const handleDelete = async (id: bigint) => {
     try {
       await deleteTask.mutateAsync(id);
+      // Remove timestamp entry
+      const map = loadTimestamps();
+      delete map[id.toString()];
+      saveTimestamps(map);
     } catch {
       toast.error("Failed to delete task.");
     }
+  };
+
+  // Compute dot state for a task (depends on tick so interval triggers re-render)
+  const getDotState = (
+    id: bigint,
+    completed: boolean,
+  ): "done" | "overdue" | "active" => {
+    void tick; // reactive dependency
+    if (completed) return "done";
+    const map = loadTimestamps();
+    const ts = map[id.toString()];
+    if (ts && Date.now() - ts > MS_24H) return "overdue";
+    return "active";
   };
 
   // Dynamic color classes based on dark/light mode
@@ -183,52 +303,35 @@ export default function App() {
   const modalClose = darkMode
     ? "text-slate-400 hover:text-white hover:bg-white/10"
     : "text-gray-400 hover:text-gray-700 hover:bg-gray-100";
+  const renameInputBg = darkMode
+    ? "bg-black/30 border-white/10 text-white placeholder-slate-500"
+    : "bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400";
+  const dueDateBadge = darkMode
+    ? "bg-white/8 text-slate-400"
+    : "bg-gray-100 text-gray-400";
 
   return (
     <div
-      className={`min-h-screen ${bg} flex flex-col transition-colors duration-300`}
+      className={`min-h-screen ${bg} flex flex-col transition-colors duration-500`}
     >
-      {/* Offline banner */}
-      <AnimatePresence>
-        {!isOnline && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3, ease: "easeInOut" }}
-            className="bg-amber-500 text-white text-sm font-medium overflow-hidden z-50"
-          >
-            <div className="px-4 py-2 flex items-center gap-2">
-              <WifiOff className="w-4 h-4 flex-shrink-0" />
-              <span>You're offline — the app is running from cache.</span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Main layout */}
       <div className="flex-1 flex flex-col sm:items-center sm:justify-center sm:py-10 sm:px-4">
+        {/* Card — spring entrance */}
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 54 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className={`w-full flex flex-col flex-1 sm:flex-none sm:w-full sm:max-w-md sm:rounded-3xl sm:border sm:backdrop-blur-xl sm:shadow-2xl overflow-hidden transition-colors duration-300 ${cardBg}`}
+          transition={{ type: "spring", stiffness: 180, damping: 22 }}
+          className={`w-full flex flex-col flex-1 sm:flex-none sm:w-full sm:max-w-md sm:rounded-3xl sm:border sm:backdrop-blur-xl sm:shadow-2xl overflow-hidden transition-colors duration-500 ${cardBg}`}
         >
           {/* Header */}
           <div className="px-6 pt-8 pb-4 flex flex-col items-center relative">
-            {/* Settings + online dot — top right */}
+            {/* Settings — top right */}
             <div className="absolute top-8 right-6 flex items-center gap-2">
-              <span
-                className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors duration-500 ${
-                  isOnline ? "bg-green-400" : "bg-amber-400"
-                }`}
-                title={isOnline ? "Online" : "Offline"}
-              />
               <button
                 type="button"
                 data-ocid="settings.open_modal_button"
                 onClick={() => setSettingsOpen(true)}
-                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200 ${settingsBtnColor}`}
+                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-300 ${settingsBtnColor}`}
                 aria-label="Open settings"
               >
                 <Settings className="w-5 h-5" />
@@ -237,35 +340,41 @@ export default function App() {
 
             {/* Centered title */}
             <motion.h1
-              initial={{ opacity: 0, y: -8 }}
+              initial={{ opacity: 0, y: -18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{
-                duration: 0.5,
-                delay: 0.1,
+                duration: 0.75,
+                delay: 0.15,
                 ease: [0.22, 1, 0.36, 1],
               }}
-              className={`text-3xl font-bold tracking-tight text-center transition-colors duration-300 ${titleColor}`}
+              className={`text-3xl font-bold tracking-tight text-center transition-colors duration-500 ${titleColor}`}
             >
               Daily Focus
             </motion.h1>
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ duration: 0.5, delay: 0.2 }}
-              className={`text-sm mt-1 text-center transition-colors duration-300 ${subtitleColor}`}
+              transition={{ duration: 0.75, delay: 0.3 }}
+              className={`text-sm mt-1 text-center transition-colors duration-500 ${subtitleColor}`}
             >
               Keep track of your most important tasks today.
             </motion.p>
           </div>
 
-          {/* Add task form */}
-          <form onSubmit={handleAddTask} className="px-6 pb-4 flex gap-2">
+          {/* Add task form — staggered entrance */}
+          <motion.form
+            onSubmit={handleAddTask}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.45 }}
+            className="px-6 pb-4 flex gap-2"
+          >
             <input
               data-ocid="todo.input"
               value={newTaskText}
               onChange={(e) => setNewTaskText(e.target.value)}
               placeholder="Add a new task…"
-              className={`flex-1 h-11 px-4 rounded-xl border text-sm focus:outline-none transition-all duration-200 ${inputBg}`}
+              className={`flex-1 h-11 px-4 rounded-xl border text-sm focus:outline-none transition-all duration-300 ${inputBg}`}
               onFocus={(e) => {
                 e.currentTarget.style.boxShadow = `0 0 0 2px ${accentColor}`;
               }}
@@ -274,11 +383,14 @@ export default function App() {
               }}
               disabled={addTask.isPending}
             />
-            <button
+            {/* Submit button with press feel */}
+            <motion.button
               type="submit"
               data-ocid="todo.add_button"
               disabled={!newTaskText.trim() || addTask.isPending}
-              className="h-11 px-4 rounded-xl text-white font-semibold text-sm flex items-center gap-1.5 transition-all duration-200 disabled:opacity-40 hover:brightness-110 active:scale-95"
+              whileTap={{ scale: 0.925 }}
+              transition={{ type: "spring", stiffness: 260, damping: 20 }}
+              className="h-11 px-4 rounded-xl text-white font-semibold text-sm flex items-center gap-1.5 transition-all duration-300 disabled:opacity-40 hover:brightness-110"
               style={{ backgroundColor: accentColor }}
             >
               {addTask.isPending ? (
@@ -289,8 +401,8 @@ export default function App() {
                   Add
                 </>
               )}
-            </button>
-          </form>
+            </motion.button>
+          </motion.form>
 
           {/* Task list */}
           <div className="flex-1 px-4 pb-6">
@@ -305,9 +417,9 @@ export default function App() {
             ) : tasks.length === 0 ? (
               <motion.div
                 data-ocid="todo.empty_state"
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 0, y: 18 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4 }}
+                transition={{ duration: 0.6 }}
                 className="flex flex-col items-center justify-center py-16 gap-3 text-center"
               >
                 <ClipboardList className={`w-10 h-10 ${emptyIcon}`} />
@@ -318,58 +430,139 @@ export default function App() {
             ) : (
               <ul className="space-y-1">
                 <AnimatePresence initial={false}>
-                  {tasks.map((task, idx) => (
-                    <motion.li
-                      key={task.id.toString()}
-                      data-ocid={`todo.item.${idx + 1}`}
-                      initial={{ opacity: 0, x: -12 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 12, height: 0, marginBottom: 0 }}
-                      transition={{ duration: 0.22, ease: "easeOut" }}
-                      className={`group flex items-center gap-3 px-3 py-3 rounded-xl transition-colors duration-150 ${taskHover}`}
-                    >
-                      <button
-                        type="button"
-                        data-ocid={`todo.checkbox.${idx + 1}`}
-                        onClick={() => handleToggle(task.id)}
-                        disabled={toggleTask.isPending}
-                        className="flex-shrink-0 transition-all duration-200 disabled:opacity-50 active:scale-90"
-                        aria-label={
-                          task.completed ? "Mark incomplete" : "Mark complete"
-                        }
+                  {tasks.map((task, idx) => {
+                    const dotState = getDotState(task.id, task.completed);
+                    const dotClass =
+                      dotState === "done"
+                        ? darkMode
+                          ? "bg-slate-600"
+                          : "bg-gray-300"
+                        : dotState === "overdue"
+                          ? "bg-red-500"
+                          : darkMode
+                            ? "bg-slate-500"
+                            : "bg-gray-400";
+                    const dotTitle =
+                      dotState === "done"
+                        ? "Completed"
+                        : dotState === "overdue"
+                          ? "Overdue – added more than 24 hours ago"
+                          : "In progress";
+
+                    return (
+                      <motion.li
+                        key={task.id.toString()}
+                        data-ocid={`todo.item.${idx + 1}`}
+                        initial={{ opacity: 0, x: -27 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{
+                          opacity: 0,
+                          scale: 0.94,
+                          height: 0,
+                          marginBottom: 0,
+                        }}
+                        transition={{
+                          duration: 0.38,
+                          ease: "easeOut",
+                          delay: idx * 0.065,
+                        }}
+                        onMouseDown={() => startLongPress(task)}
+                        onMouseUp={cancelLongPress}
+                        onMouseLeave={cancelLongPress}
+                        onTouchStart={() => startLongPress(task)}
+                        onTouchEnd={cancelLongPress}
+                        className={`group flex items-center gap-3 px-3 py-3 rounded-xl transition-colors duration-200 select-none ${taskHover}`}
+                        style={{ cursor: "pointer" }}
                       >
-                        {task.completed ? (
-                          <CheckCircle2
-                            className="w-5 h-5"
-                            style={{ color: accentColor }}
-                          />
-                        ) : (
-                          <Circle
-                            className={`w-5 h-5 ${darkMode ? "text-slate-600" : "text-gray-300"}`}
-                          />
+                        {/* Checkbox with micro-interaction */}
+                        <motion.button
+                          type="button"
+                          data-ocid={`todo.checkbox.${idx + 1}`}
+                          onClick={() => handleToggle(task.id)}
+                          disabled={toggleTask.isPending}
+                          whileTap={{ scale: 0.73 }}
+                          transition={{
+                            type: "spring",
+                            stiffness: 240,
+                            damping: 18,
+                          }}
+                          className="flex-shrink-0 transition-all duration-300 disabled:opacity-50"
+                          aria-label={
+                            task.completed ? "Mark incomplete" : "Mark complete"
+                          }
+                        >
+                          {task.completed ? (
+                            <CheckCircle2
+                              className="w-5 h-5"
+                              style={{ color: accentColor }}
+                            />
+                          ) : (
+                            <Circle
+                              className={`w-5 h-5 ${
+                                darkMode ? "text-slate-600" : "text-gray-300"
+                              }`}
+                            />
+                          )}
+                        </motion.button>
+
+                        {/* Task text with fade on completion */}
+                        <motion.span
+                          animate={{ opacity: task.completed ? 0.5 : 1 }}
+                          transition={{ duration: 0.4 }}
+                          className={`flex-1 text-sm transition-all duration-400 ${
+                            task.completed
+                              ? `line-through ${taskDone}`
+                              : taskText
+                          }`}
+                        >
+                          {task.text}
+                        </motion.span>
+
+                        {/* Due date badge */}
+                        {task.dueDate && (
+                          <span
+                            className={`flex-shrink-0 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full transition-colors duration-300 ${dueDateBadge}`}
+                          >
+                            <CalendarDays className="w-3 h-3" />
+                            {formatDueDate(task.dueDate)}
+                          </span>
                         )}
-                      </button>
 
-                      <span
-                        className={`flex-1 text-sm transition-all duration-300 ${
-                          task.completed ? `line-through ${taskDone}` : taskText
-                        }`}
-                      >
-                        {task.text}
-                      </span>
+                        {/* Rename hint icon — visible on hover */}
+                        <Pencil
+                          className={`flex-shrink-0 w-3.5 h-3.5 opacity-0 group-hover:opacity-40 transition-all duration-300 ${
+                            darkMode ? "text-slate-400" : "text-gray-400"
+                          }`}
+                        />
 
-                      <button
-                        type="button"
-                        data-ocid={`todo.delete_button.${idx + 1}`}
-                        onClick={() => handleDelete(task.id)}
-                        disabled={deleteTask.isPending}
-                        className={`flex-shrink-0 opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-all duration-200 disabled:opacity-30 active:scale-90 ${darkMode ? "text-slate-600" : "text-gray-300"}`}
-                        aria-label="Delete task"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </motion.li>
-                  ))}
+                        <button
+                          type="button"
+                          data-ocid={`todo.delete_button.${idx + 1}`}
+                          onClick={() => handleDelete(task.id)}
+                          disabled={deleteTask.isPending}
+                          className={`flex-shrink-0 opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-all duration-300 disabled:opacity-30 active:scale-90 ${
+                            darkMode ? "text-slate-600" : "text-gray-300"
+                          }`}
+                          aria-label="Delete task"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+
+                        {/* Status dot */}
+                        <motion.span
+                          key={dotState}
+                          initial={{ scale: 0.4, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          transition={{
+                            duration: 0.35,
+                            ease: [0.22, 1, 0.36, 1],
+                          }}
+                          title={dotTitle}
+                          className={`flex-shrink-0 w-2.5 h-2.5 rounded-full transition-colors duration-700 ${dotClass}`}
+                        />
+                      </motion.li>
+                    );
+                  })}
                 </AnimatePresence>
               </ul>
             )}
@@ -377,7 +570,7 @@ export default function App() {
 
           {/* Footer */}
           <div
-            className={`px-6 py-4 border-t text-center transition-colors duration-300 ${footerBorder}`}
+            className={`px-6 py-4 border-t text-center transition-colors duration-500 ${footerBorder}`}
           >
             <p className={`text-xs ${footerText}`}>
               © {new Date().getFullYear()}. Built with ❤️ using{" "}
@@ -385,7 +578,7 @@ export default function App() {
                 href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-slate-400 transition-colors duration-200"
+                className="underline hover:text-slate-400 transition-colors duration-300"
               >
                 caffeine.ai
               </a>
@@ -401,17 +594,17 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.25 }}
+            transition={{ duration: 0.38 }}
             className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
           >
             <motion.div
               ref={modalRef}
               data-ocid="settings.dialog"
-              initial={{ opacity: 0, y: 28, scale: 0.96 }}
+              initial={{ opacity: 0, y: 63, scale: 0.94 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 28, scale: 0.96 }}
-              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-              className={`w-full max-w-sm border rounded-3xl shadow-2xl overflow-hidden transition-colors duration-300 ${modalBg}`}
+              exit={{ opacity: 0, y: 63, scale: 0.94 }}
+              transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+              className={`w-full max-w-sm border rounded-3xl shadow-2xl overflow-hidden transition-colors duration-500 ${modalBg}`}
             >
               {/* Modal header */}
               <div className="px-6 pt-6 pb-4 flex items-center justify-between">
@@ -420,7 +613,7 @@ export default function App() {
                   type="button"
                   data-ocid="settings.close_button"
                   onClick={() => setSettingsOpen(false)}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 active:scale-90 ${modalClose}`}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 active:scale-90 ${modalClose}`}
                   aria-label="Close settings"
                 >
                   <X className="w-4 h-4" />
@@ -435,12 +628,14 @@ export default function App() {
                   Appearance
                 </p>
                 <div
-                  className={`flex items-center justify-between p-1 rounded-xl ${darkMode ? "bg-white/5" : "bg-gray-100"}`}
+                  className={`flex items-center justify-between p-1 rounded-xl ${
+                    darkMode ? "bg-white/5" : "bg-gray-100"
+                  }`}
                 >
                   <button
                     type="button"
                     onClick={() => setDarkMode(true)}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-medium transition-all duration-300 ${
                       darkMode
                         ? "bg-slate-700 text-white shadow"
                         : "text-gray-500 hover:text-gray-700"
@@ -452,7 +647,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setDarkMode(false)}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-medium transition-all duration-300 ${
                       !darkMode
                         ? "bg-white text-gray-900 shadow"
                         : "text-slate-400 hover:text-slate-200"
@@ -465,7 +660,7 @@ export default function App() {
               </div>
 
               {/* Theme color picker */}
-              <div className="px-6 pb-8">
+              <div className="px-6 pb-6">
                 <p
                   className={`text-xs font-semibold uppercase tracking-wider mb-4 ${modalLabel}`}
                 >
@@ -476,19 +671,204 @@ export default function App() {
                     <motion.button
                       key={swatch.key}
                       type="button"
-                      data-ocid={"settings.toggle"}
+                      data-ocid="settings.toggle"
                       onClick={() => setTheme(swatch.key)}
-                      whileTap={{ scale: 0.88 }}
-                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.82 }}
+                      whileHover={{ scale: 1.18 }}
+                      transition={{
+                        type: "spring",
+                        stiffness: 260,
+                        damping: 18,
+                      }}
                       aria-label={`Set ${swatch.key} theme`}
-                      className={`w-10 h-10 rounded-full transition-all duration-200 ${
+                      className={`w-10 h-10 rounded-full transition-all duration-300 ${
                         theme === swatch.key
-                          ? `opacity-100 ring-2 ring-offset-2 ${darkMode ? "ring-offset-slate-900" : "ring-offset-white"}`
+                          ? `opacity-100 ring-2 ring-offset-2 ${
+                              darkMode
+                                ? "ring-offset-slate-900"
+                                : "ring-offset-white"
+                            }`
                           : "opacity-60 hover:opacity-80"
                       } ${swatch.ring}`}
                       style={{ backgroundColor: swatch.color }}
                     />
                   ))}
+                </div>
+              </div>
+
+              {/* Schedule a Task — Calendar section */}
+              <div
+                className={`px-6 pb-8 border-t pt-6 transition-colors duration-500 ${
+                  darkMode ? "border-white/5" : "border-gray-100"
+                }`}
+              >
+                <p
+                  className={`text-xs font-semibold uppercase tracking-wider mb-4 flex items-center gap-1.5 ${modalLabel}`}
+                >
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  Schedule a Task
+                </p>
+                <form
+                  onSubmit={handleScheduleTask}
+                  className="flex flex-col gap-3"
+                >
+                  {/* Date picker */}
+                  <input
+                    type="date"
+                    data-ocid="settings.input"
+                    value={scheduleDate}
+                    onChange={(e) => setScheduleDate(e.target.value)}
+                    className={`w-full h-10 px-3 rounded-xl border text-sm focus:outline-none transition-all duration-300 ${renameInputBg}`}
+                    style={{
+                      colorScheme: darkMode ? "dark" : "light",
+                    }}
+                    onFocus={(e) => {
+                      e.currentTarget.style.boxShadow = `0 0 0 2px ${accentColor}`;
+                    }}
+                    onBlur={(e) => {
+                      e.currentTarget.style.boxShadow = "";
+                    }}
+                  />
+                  {/* Task name */}
+                  <input
+                    type="text"
+                    data-ocid="settings.textarea"
+                    value={scheduleText}
+                    onChange={(e) => setScheduleText(e.target.value)}
+                    placeholder="Task name…"
+                    className={`w-full h-10 px-3 rounded-xl border text-sm focus:outline-none transition-all duration-300 ${renameInputBg}`}
+                    onFocus={(e) => {
+                      e.currentTarget.style.boxShadow = `0 0 0 2px ${accentColor}`;
+                    }}
+                    onBlur={(e) => {
+                      e.currentTarget.style.boxShadow = "";
+                    }}
+                  />
+                  {/* Add button */}
+                  <motion.button
+                    type="submit"
+                    data-ocid="settings.submit_button"
+                    disabled={
+                      !scheduleText.trim() || !scheduleDate || addTask.isPending
+                    }
+                    whileTap={{ scale: 0.925 }}
+                    transition={{ type: "spring", stiffness: 260, damping: 20 }}
+                    className="w-full h-10 rounded-xl text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all duration-300 disabled:opacity-40 hover:brightness-110"
+                    style={{ backgroundColor: accentColor }}
+                  >
+                    {addTask.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        Add to Calendar
+                      </>
+                    )}
+                  </motion.button>
+                </form>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Rename Dialog */}
+      <AnimatePresence>
+        {renamingTask && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.32 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onMouseDown={(e) => {
+              if (
+                renameModalRef.current &&
+                !renameModalRef.current.contains(e.target as Node)
+              ) {
+                closeRenameDialog();
+              }
+            }}
+          >
+            <motion.div
+              ref={renameModalRef}
+              data-ocid="todo.dialog"
+              initial={{ opacity: 0, y: 36, scale: 0.925 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 36, scale: 0.925 }}
+              transition={{ type: "spring", stiffness: 240, damping: 24 }}
+              className={`w-full max-w-xs border rounded-2xl shadow-2xl overflow-hidden transition-colors duration-500 ${modalBg}`}
+            >
+              {/* Dialog header */}
+              <div className="px-5 pt-5 pb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Pencil className="w-4 h-4" style={{ color: accentColor }} />
+                  <h2 className={`text-base font-bold ${modalTitle}`}>
+                    Rename Task
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  data-ocid="todo.close_button"
+                  onClick={closeRenameDialog}
+                  className={`w-7 h-7 rounded-full flex items-center justify-center transition-all duration-300 active:scale-90 ${modalClose}`}
+                  aria-label="Close rename dialog"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Input */}
+              <div className="px-5 pb-5">
+                <input
+                  ref={renameInputRef}
+                  data-ocid="todo.input"
+                  value={renameText}
+                  onChange={(e) => setRenameText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRename();
+                    if (e.key === "Escape") closeRenameDialog();
+                  }}
+                  placeholder="Task name…"
+                  className={`w-full h-10 px-3 rounded-xl border text-sm focus:outline-none transition-all duration-300 mb-4 ${renameInputBg}`}
+                  onFocus={(e) => {
+                    e.currentTarget.style.boxShadow = `0 0 0 2px ${accentColor}`;
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.boxShadow = "";
+                  }}
+                />
+
+                {/* Action buttons */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    data-ocid="todo.cancel_button"
+                    onClick={closeRenameDialog}
+                    className={`flex-1 h-9 rounded-xl text-sm font-medium transition-all duration-300 active:scale-95 ${
+                      darkMode
+                        ? "bg-white/8 text-slate-300 hover:bg-white/12"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <motion.button
+                    type="button"
+                    data-ocid="todo.save_button"
+                    onClick={handleRename}
+                    disabled={!renameText.trim() || renameTask.isPending}
+                    whileTap={{ scale: 0.925 }}
+                    transition={{ type: "spring", stiffness: 260, damping: 20 }}
+                    className="flex-1 h-9 rounded-xl text-white text-sm font-semibold transition-all duration-300 disabled:opacity-40 hover:brightness-110"
+                    style={{ backgroundColor: accentColor }}
+                  >
+                    {renameTask.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+                    ) : (
+                      "Save"
+                    )}
+                  </motion.button>
                 </div>
               </div>
             </motion.div>

@@ -18,4 +18,5 @@ export interface backendInterface {
     getTask(id: bigint): Promise<Task>;
     listTasks(): Promise<Array<Task>>;
     toggleTask(id: bigint): Promise<void>;
+    renameTask(id: bigint, newText: string): Promise<void>;
 }

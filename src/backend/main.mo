@@ -33,9 +33,7 @@ actor {
 
   public query ({ caller }) func getTask(id : Nat) : async Task {
     switch (tasks.get(id)) {
-      case (null) {
-        Runtime.trap("Task does not exist");
-      };
+      case (null) { Runtime.trap("Task does not exist") };
       case (?task) { task };
     };
   };
@@ -52,6 +50,20 @@ actor {
           id = existingTask.id;
           text = existingTask.text;
           completed = not existingTask.completed;
+        };
+        tasks.add(id, updatedTask);
+      };
+    };
+  };
+
+  public shared ({ caller }) func renameTask(id : Nat, newText : Text) : async () {
+    switch (tasks.get(id)) {
+      case (null) { Runtime.trap("Task does not exist") };
+      case (?existingTask) {
+        let updatedTask : Task = {
+          id = existingTask.id;
+          text = newText;
+          completed = existingTask.completed;
         };
         tasks.add(id, updatedTask);
       };
